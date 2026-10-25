@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <script>
+    // Design vor dem ersten Zeichnen setzen (kein Aufblitzen des hellen Designs)
+    (function () {
+      var t = null;
+      try { t = localStorage.getItem("theme"); } catch (e) {}
+      if (t !== "dark" && t !== "light") {
+        t = window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+      }
+      document.documentElement.setAttribute("data-theme", t);
+    })();
+  </script>
+  <title>2D-Geometrie aus Linien – WebGL</title>
+  <meta name="description" content="Ein Rennrad als Linienzeichnung aus über 3.000 prozedural erzeugten Vertices, dargestellt mit WebGL (LINES, LINE_STRIP, LINE_LOOP).">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,600;12..96,800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <a class="skip" href="#zeichnung">Zur Zeichnung springen</a>
+
+  <header>
+    <div class="topbar">
+      <button type="button" id="theme-switch" class="theme-switch" role="switch" aria-checked="false">
+        <span class="track" aria-hidden="true"><span class="thumb"></span></span>
+        <span>Dunkles Design</span>
+      </button>
+    </div>
+    <div class="intro">
+      <h1>2D-Geometrie aus Linien</h1>
+      <p>Ein Rennrad als Linienzeichnung, vollständig prozedural erzeugt und mit WebGL gezeichnet. Kreise, Zahnkränze, gekreuzte Speichen, Kette und Lenker entstehen in Schleifen aus Tausenden Vertices. Dargestellt nur mit <code>gl.LINES</code>, <code>gl.LINE_STRIP</code> und <code>gl.LINE_LOOP</code>.</p>
+    </div>
+  </header>
+
+  <main>
+    <section class="stage" aria-labelledby="h-zeichnung">
+      <h2 id="h-zeichnung">Die Zeichnung</h2>
+
+      <figure class="gl-wrap" id="zeichnung" tabindex="-1">
+        <canvas id="gl" class="gl-canvas" width="1800" height="1100" role="img" aria-labelledby="canvas-desc">
+          Ihr Browser kann das Canvas-Element nicht darstellen.
+        </canvas>
+        <img id="sketch-overlay" class="sketch-overlay" src="img/entwurf.jpg" alt="" aria-hidden="true" width="1800" height="1100" hidden>
+        <figcaption id="canvas-desc" class="visually-hidden">Linienzeichnung eines Rennrads in Seitenansicht.</figcaption>
+      </figure>
+
+      <ul class="legend" aria-label="Farblegende">
+        <li><span class="swatch sw-frame" aria-hidden="true"></span>Rahmen und Gabel</li>
+        <li><span class="swatch sw-ink" aria-hidden="true"></span>Laufräder, Sattel, Cockpit</li>
+        <li><span class="swatch sw-drive" aria-hidden="true"></span>Antrieb, Profil, Boden</li>
+        <li><span class="swatch sw-detail" aria-hidden="true"></span>Details</li>
+        <li><span class="swatch sw-grid" aria-hidden="true"></span>Raster (1 Kästchen = 40 mm)</li>
+      </ul>
+
+      <dl class="stats" aria-label="Kennzahlen der Geometrie">
+        <div><dt>Vertices:</dt><dd id="stat-vertices">–</dd></div>
+        <div><dt>Bauteile / drawArrays-Aufrufe:</dt><dd id="stat-parts">–</dd></div>
+        <div><dt>LINES / LINE_STRIP / LINE_LOOP:</dt><dd id="stat-modes">–</dd></div>
+      </dl>
+
+      <div class="options">
+        <label class="check"><input type="checkbox" id="toggle-grid" checked> Entwurfsraster anzeigen</label>
+        <label class="check"><input type="checkbox" id="toggle-sketch" aria-describedby="sketch-hint"> Handskizze überlagern</label>
+      </div>
+      <p id="sketch-hint" class="visually-hidden">Legt das Foto der Handskizze deckungsgleich über die WebGL-Zeichnung.</p>
+
+      <p id="status" class="status" role="status" aria-live="polite" aria-atomic="true">WebGL wird gestartet …</p>
+    </section>
+
+    <section class="doc" aria-labelledby="h-entwurf">
+      <h2 id="h-entwurf">Von der Handskizze zum Code</h2>
+      <p>Am Anfang steht eine Bleistiftskizze auf Karopapier. Ein Kästchen entspricht 40 mm, der Ursprung liegt in der Hinterachse. Aus der Skizze wurden die Fixpunkte A bis H abgelesen und unverändert als Konstante <code>SKIZZE</code> in <code>app.js</code> übernommen. Alle übrigen Punkte berechnet das Programm daraus.</p>
+      <figure class="sketch">
+        <img src="img/entwurf.jpg" alt="Foto der Handskizze: Rennrad in Seitenansicht, mit Bleistift auf Karopapier gezeichnet, mit Reifenprofil, vier Speichen-Hilfslinien je Rad, Kettenblatt, Bremsscheibe, Sattel, Vorbau, Lenker und schraffiertem Boden" width="1800" height="1100" loading="lazy">
+        <figcaption>Handskizze auf Karopapier. Das Foto ist perspektivisch entzerrt und auf den Zeichenbereich der WebGL-Seite zugeschnitten: Ein Kästchen im Foto entspricht einem Kästchen im Raster oben.</figcaption>
+      </figure>
+
+      <h3 class="h3">So entsteht die Zeichnung</h3>
+      <ol class="steps">
+        <li><strong>Skizzieren:</strong> Achsen, Tretlager und Rahmen werden auf dem Karopapier an Rasterpunkten festgelegt, Kreise mit dem Zirkel gezogen.</li>
+        <li><strong>Ablesen:</strong> Die Fixpunkte werden in Kästchen abgelesen, von der Hinterachse aus gezählt (Tabelle unten).</li>
+        <li><strong>Übertragen:</strong> Im Code wird jeder Wert mit 40 multipliziert und ergibt Millimeter. Richtungen und Winkel – Lenkachse, Sitzrohr, Lage von Ober- und Unterrohr – berechnet das Programm aus den Punkten.</li>
+        <li><strong>Ausarbeiten:</strong> Was die Skizze nur andeutet, erzeugen Schleifen: aus vier Hilfslinien je Rad werden 24 gekreuzte Speichen, aus dem Kreis ums Tretlager ein Kettenblatt mit 52 Zähnen, aus zwei Linien eine Kette mit Laschen und Rollen, aus den Strichen am Reifen 120 Profilstriche.</li>
+        <li><strong>Ergänzen:</strong> Einige Teile sind nur im Code hinzugekommen: Schaltwerk, Bremssattel, Trinkflasche und Lenkerband.</li>
+        <li><strong>Prüfen:</strong> Mit „Handskizze überlagern“ oben lässt sich das Foto über die WebGL-Zeichnung legen und vergleichen.</li>
+      </ol>
+
+      <div class="table-scroll">
+        <table class="keys">
+          <caption>Fixpunkte aus der Skizze (x | y), Ursprung Hinterachse, y nach oben</caption>
+          <thead>
+            <tr><th scope="col">Punkt</th><th scope="col">Bedeutung</th><th scope="col" class="num">Skizze in Kästchen</th><th scope="col" class="num">Code in mm</th></tr>
+          </thead>
+          <tbody id="fix-body"></tbody>
+        </table>
+      </div>
+      <dl class="stats stats-left" aria-label="Aus den Fixpunkten berechnet">
+        <div><dt>Radstand:</dt><dd id="geo-radstand">–</dd></div>
+        <div><dt>Lenkwinkel:</dt><dd id="geo-lenkwinkel">–</dd></div>
+        <div><dt>Sitzwinkel:</dt><dd id="geo-sitzwinkel">–</dd></div>
+        <div><dt>Laufradradius:</dt><dd id="geo-radius">–</dd></div>
+      </dl>
+      <pre class="code"><code>const K = 40;                                   // 1 Kästchen = 40 mm
+const SKIZZE = {
+  A: { name: "Hinterachse",     p: [0, 0] },
+  B: { name: "Vorderachse",     p: [26, 0] },
+  C: { name: "Tretlager",       p: [10, -2.1] },
+  D: { name: "Steuerrohr oben", p: [20.5, 11.7] },
+  /* … */
+};
+const HT_DIR = norm(sub(mm("E"), mm("D")));     // Lenkachse aus zwei Fixpunkten</code></pre>
+    </section>
+
+    <section class="doc" aria-labelledby="h-umsetzung">
+      <h2 id="h-umsetzung">Umsetzung</h2>
+      <p><strong>Prozedurale Geometrie:</strong> Statt die Vertices einzeln einzutippen, erzeugen Funktionen die Punkte in Schleifen. Ein Kreis ist eine Schleife über den Winkel, ein Zahnkranz setzt pro Zahn vier Punkte (Fuß, Flanke, Kopf, Flanke), die 24 Speichen sind zweifach gekreuzt eingespeicht, also um ±24° versetzt zwischen Nabe und Felge. Gabel, Bremsleitung und Bremshebel sind Bézierkurven, Sattel, Lenker und Trinkflasche Catmull-Rom-Splines durch wenige Stützpunkte. Die Kette verläuft auf den äußeren Tangenten zwischen Ritzel, Schaltröllchen und Kettenblatt; Laschen und Rollen sitzen im echten Kettenteilungsabstand von 12,7 mm.</p>
+      <pre class="code"><code>// Beispiel: Zahnkranz als LINE_LOOP
+function toothedRing(c, rOuter, rInner, teeth) {
+  const pts = [], step = 2 * Math.PI / teeth;
+  for (let i = 0; i &lt; teeth; i++) {
+    const a = i * step;
+    pts.push(pol(c, rInner, a),               pol(c, rOuter, a + step * 0.22),
+             pol(c, rOuter, a + step * 0.5),  pol(c, rInner, a + step * 0.72));
+  }
+  return pts;
+}</code></pre>
+      <p><strong>Ein Buffer, viele Aufrufe:</strong> Alle Teile liegen hintereinander in einem einzigen <code>Float32Array</code>. Für jedes Teil merkt sich das Programm den Startindex und die Anzahl seiner Punkte und zeichnet es mit einem eigenen <code>drawArrays</code>-Aufruf und eigener Farbe. Wichtig ist der <code>count</code>-Parameter: Er zählt <em>2D-Vertices</em>, nicht Zahlen im Array – jeder Vertex besteht aus zwei Werten (x, y).</p>
+      <pre class="code"><code>drawCalls.push({ first: vertices.length / 2, count: p.pts.length });
+gl.vertexAttribPointer(aPosition, 2, gl.FLOAT, false, 0, 0);  // 2 Werte = 1 Vertex
+gl.drawArrays(gl.LINE_LOOP, first, count);                    // count = Anzahl Vertices</code></pre>
+      <p><strong>Koordinaten:</strong> Die Punkte liegen in Millimetern vor (Kästchen der Skizze × 40). Der Vertex-Shader rechnet sie über den sichtbaren Bereich (−400 bis 1400 mm × −400 bis 700 mm) in den Clip Space von −1 bis 1 um. Das Seitenverhältnis des Canvas ist fest (18 : 11), daher bleibt die Zeichnung unverzerrt. Bei jeder Größenänderung wird die Zeichenfläche an die tatsächliche Pixelgröße und Pixeldichte angepasst, damit die Linien auch auf Retina-Displays scharf sind.</p>
+      <p><strong>Primitive:</strong> <code>gl.LINE_LOOP</code> für geschlossene Konturen (Reifen, Zahnkränze, Sattel, Flasche), <code>gl.LINE_STRIP</code> für offene Kurven (Gabel, Lenker, Hinterbau), <code>gl.LINES</code> für viele einzelne Striche (Speichen, Reifenprofil, Kettenrollen, Raster).</p>
+    </section>
+
+    <section class="doc" aria-labelledby="h-teile">
+      <h2 id="h-teile">Alle Bauteile</h2>
+      <div class="table-scroll">
+        <table class="keys">
+          <caption>Bauteile der Zeichnung mit Primitiv und Anzahl der Vertices (ohne Raster)</caption>
+          <thead>
+            <tr><th scope="col">Gruppe</th><th scope="col">Bauteil</th><th scope="col">Primitiv</th><th scope="col" class="num">Vertices</th></tr>
+          </thead>
+          <tbody id="parts-body"></tbody>
+          <tfoot>
+            <tr><td colspan="3">Summe</td><td class="num" id="parts-total">–</td></tr>
+          </tfoot>
+        </table>
+      </div>
+    </section>
+
+    <section class="doc" aria-labelledby="h-linien">
+      <h2 id="h-linien">Linienstärke</h2>
+      <p><code>gl.lineWidth()</code> wird von vielen Browsern ignoriert. Chrome unter macOS zeichnet über ANGLE/Metal nur Linien mit 1 px Breite. Die Seite fragt deshalb <code>ALIASED_LINE_WIDTH_RANGE</code> ab und nutzt breitere Linien für den Rahmen nur, wenn sie verfügbar sind. Ihr Browser meldet: <strong id="line-range">–</strong></p>
+      <p>Damit die Zeichnung trotzdem plastisch wirkt, arbeitet sie mit Doppelkonturen (Rahmenrohre mit zwei Kanten, Reifen, Felge, Gabel) und Farbgewichten statt mit Linienstärke.</p>
+    </section>
+
+    <section class="doc" aria-labelledby="h-a11y">
+      <h2 id="h-a11y">Barrierefreiheit</h2>
+      <dl class="hci">
+        <dt>Textalternative</dt>
+        <dd>Das Canvas trägt <code>role="img"</code> und eine Beschreibung, die beim Start mit den tatsächlichen Zahlen erzeugt wird. Alle Bauteile stehen zusätzlich als Tabelle auf der Seite (1.1.1, 1.3.1).</dd>
+        <dt>Kontrast und Farbe</dt>
+        <dd>Texte erreichen in beiden Designs mindestens 4,5:1, die Linienfarben der Zeichnung mindestens 3:1 gegenüber dem Hintergrund. Die Farben sind ergänzend; die Legende und die Tabelle benennen jedes Teil (1.4.1, 1.4.3, 1.4.11).</dd>
+        <dt>Helles und dunkles Design</dt>
+        <dd>Startet passend zur Systemeinstellung, lässt sich oben rechts umschalten und wird gespeichert. Die WebGL-Zeichnung übernimmt die Farben direkt aus den CSS-Variablen.</dd>
+        <dt>Tastatur, Zoom, Bewegung</dt>
+        <dd>Skip-Link, sichtbarer Fokus, keine Animation. Das Layout funktioniert bis 320 px Breite; die Tabelle scrollt bei Bedarf in sich (1.4.10, 2.1.1, 2.4.1, 2.4.7).</dd>
+      </dl>
+    </section>
+
+    <section class="doc" aria-labelledby="h-qa">
+      <h2 id="h-qa">Test und Qualitätssicherung</h2>
+      <p>Getestet in Chrome unter macOS in beiden Designs und bei verschiedenen Fenstergrößen. Shader- und Programmfehler werden abgefangen und auf der Seite angezeigt; nach dem Zeichnen prüft das Programm <code>gl.getError()</code>. Die Konsole (<kbd>Cmd</kbd>+<kbd>Alt</kbd>+<kbd>J</kbd>) zeigt nur eine Info-Meldung mit der Zahl der Aufrufe und der Linienbreite, keine Fehler. Ohne WebGL erscheint ein Hinweis statt einer leeren Fläche. Mit „Handskizze überlagern“ wurde geprüft, dass Achsen, Rahmen und Kreise der WebGL-Zeichnung auf den Linien der Skizze liegen.</p>
+    </section>
+
+    <section class="doc" aria-labelledby="h-quellen">
+      <h2 id="h-quellen">Quellen</h2>
+      <ul class="sources">
+        <li><strong>Handskizze, Geometrie und Code:</strong> selbst erstellt. Das Foto der Skizze wurde für die Webseite perspektivisch entzerrt und im Kontrast angehoben.</li>
+        <li><strong>Inspiration für den Linienstil:</strong> „Satz lineare Tierillustrationen“, <a href="https://de.freepik.com/vektoren-kostenlos/satz-lineare-tierillustrationen_3771101.htm">Freepik</a>. Es wurde kein Material daraus übernommen.</li>
+        <li><strong>Schrift:</strong> Bricolage Grotesque, Mathieu Triay, SIL Open Font License, über <a href="https://fonts.google.com/specimen/Bricolage+Grotesque">Google Fonts</a>.</li>
+        <li><strong>Referenzen:</strong> <a href="https://developer.mozilla.org/de/docs/Web/API/WebGLRenderingContext/drawArrays">MDN: drawArrays()</a>, <a href="https://developer.mozilla.org/en-US/docs/Web/API/WebGLRenderingContext/lineWidth">MDN: lineWidth()</a>, <a href="https://en.wikipedia.org/wiki/Centripetal_Catmull%E2%80%93Rom_spline">Catmull-Rom-Spline</a>, <a href="https://en.wikipedia.org/wiki/B%C3%A9zier_curve">Bézierkurve</a>.</li>
+      </ul>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <p>Thomas Brehmer, M.Sc. Medieninformatik, BHT Berlin</p>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
